@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Finviz Market Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #1d232a; color: #a6adbb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .glass-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 16px; }
+    .ticker-badge { font-weight: 700; font-family: monospace; }
+    .green { color: #22c55e; }
+    .red { color: #ef4444; }
+    .sortable { cursor: pointer; user-select: none; }
+    .sortable:hover { color: #818cf8; }
+    .sort-arrow { font-size: 10px; margin-left: 3px; }
+    table th { position: sticky; top: 0; background: #1d232a; z-index: 1; }
+    .spinner { animation: spin 1s linear infinite; }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+    .tab-active { background: rgba(99,102,241,0.2) !important; color: #818cf8 !important; border-color: #818cf8 !important; }
+    .progress-bar { height: 6px; border-radius: 3px; overflow: hidden; background: rgba(255,255,255,0.1); }
+    .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .pattern-bullish { border-left: 3px solid #22c55e; }
+    .pattern-bearish { border-left: 3px solid #ef4444; }
+    .pattern-neutral { border-left: 3px solid #f59e0b; }
+  </style>
+</head>
+<body class="min-h-screen p-4">
+  <div class="max-w-7xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-wrap items-center justify-between mb-4 gap-3">
+      <div>
+        <h1 class="text-2xl font-bold text-white flex items-center gap-2">
+          📊 Finviz Market Dashboard
+        </h1>
+        <p id="headline" class="text-sm text-base-content/50 mt-1">Loading...</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="lastUpdated" class="text-xs text-base-content/40"></span>
+        <button id="refreshBtn" onclick="loadData()" class="btn btn-sm btn-primary gap-2">
+          <svg id="refreshIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- Filter badge -->
+    <div id="filterBadge" class="hidden mb-3">
+      <div class="badge badge-outline badge-sm gap-1">
+        🔍 Filters: Price &gt; $1 · Weekly Perf &gt; 0% · <span id="filterCount"></span>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div id="errorBox" class="hidden alert alert-error mb-4">
+      <span id="errorMsg"></span>
+      <button onclick="loadData()" class="btn btn-sm btn-ghost">Retry</button>
+    </div>
+
+    <!-- Loading -->
+    <div id="loadingBox" class="flex flex-col items-center justify-center py-20">
+      <svg class="spinner w-10 h-10 text-primary" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>
+      <p class="text-sm mt-3 text-base-content/50">Fetching live data from Finviz (~15 seconds)...</p>
+    </div>
+
+    <!-- Main content (hidden until loaded) -->
+    <div id="mainContent" class="hidden">
+      <!-- Top row: Breadth + Futures -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- Market Breadth -->
+        <div class="glass-card">
+          <h2 class="text-sm font-semibold text-white mb-3">📈 Market Breadth</h2>
+          <div id="breadthContent"></div>
+        </div>
+        <!-- Futures -->
+        <div class="glass-card">
+          <h2 class="text-sm font-semibold text-white mb-3">🌍 Futures</h2>
+          <div id="futuresContent"></div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="flex gap-2 mb-3">
+        <button onclick="switchTab('stocks')" id="tab-stocks" class="btn btn-sm btn-ghost tab-active">🏆 Top 30 Gainers</button>
+        <button onclick="switchTab('patterns')" id="tab-patterns" class="btn btn-sm btn-ghost">📐 Chart Patterns</button>
+      </div>
+
+      <!-- Stocks Table -->
+      <div id="stocksPanel" class="glass-card overflow-x-auto" style="max-height: 600px; overflow-y: auto;">
+        <table class="table table-xs table-zebra w-full">
+          <thead>
+            <tr class="text-xs">
+              <th class="sortable" onclick="sortStocks('rank')">#<span class="sort-arrow" id="sort-rank">▼</span></th>
+              <th>Ticker</th>
+              <th>Company</th>
+              <th>Sector</th>
+              <th>Mkt Cap</th>
+              <th>P/E</th>
+              <th class="sortable text-right" onclick="sortStocks('price')">Price<span class="sort-arrow" id="sort-price"></span></th>
+              <th class="sortable text-right" onclick="sortStocks('change')">Day %<span class="sort-arrow" id="sort-change"></span></th>
+              <th class="sortable text-right" onclick="sortStocks('perfWeek')">Week %<span class="sort-arrow" id="sort-perfWeek"></span></th>
+              <th class="sortable text-right" onclick="sortStocks('volume')">Volume<span class="sort-arrow" id="sort-volume"></span></th>
+            </tr>
+          </thead>
+          <tbody id="stocksBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Patterns Panel -->
+      <div id="patternsPanel" class="hidden">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" id="patternsGrid"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentData = null;
+    let currentSort = { key: 'rank', dir: 'asc' };
+
+    async function loadData() {
+      const btn = document.getElementById('refreshBtn');
+      const icon = document.getElementById('refreshIcon');
+      const loadingBox = document.getElementById('loadingBox');
+      const mainContent = document.getElementById('mainContent');
+      const errorBox = document.getElementById('errorBox');
+
+      btn.disabled = true;
+      icon.classList.add('spinner');
+      errorBox.classList.add('hidden');
+
+      if (!currentData) {
+        loadingBox.classList.remove('hidden');
+        mainContent.classList.add('hidden');
+      }
+
+      try {
+        const resp = await fetch('/api/data');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+
+        currentData = data;
+        renderAll(data);
+        loadingBox.classList.add('hidden');
+        mainContent.classList.remove('hidden');
+        document.getElementById('lastUpdated').textContent = `Updated: ${data.lastUpdated}`;
+      } catch (e) {
+        document.getElementById('errorMsg').textContent = `Failed to load: ${e.message}`;
+        errorBox.classList.remove('hidden');
+        if (!currentData) {
+          loadingBox.classList.add('hidden');
+        }
+      } finally {
+        btn.disabled = false;
+        icon.classList.remove('spinner');
+      }
+    }
+
+    function renderAll(data) {
+      document.getElementById('headline').textContent = data.headline || '';
+
+      // Filter badge
+      if (data.filteredOut > 0) {
+        document.getElementById('filterBadge').classList.remove('hidden');
+        document.getElementById('filterCount').textContent =
+          `${data.filteredOut} removed, ${data.stocks.length} shown of ${data.totalBeforeFilter}`;
+      }
+
+      renderBreadth(data.breadth);
+      renderFutures(data.futures);
+      renderStocks(data.stocks);
+      renderPatterns(data.patterns);
+    }
+
+    function renderBreadth(b) {
+      if (!b || !b.advancing) {
+        document.getElementById('breadthContent').innerHTML = '<p class="text-xs text-base-content/40">No breadth data available</p>';
+        return;
+      }
+      const total = b.advancing + b.declining;
+      const bullish = b.advancingPct >= 50;
+      const rows = [
+        { label: '🟢 Advancing', count: b.advancing, pct: b.advancingPct, color: '#22c55e' },
+        { label: '🔴 Declining', count: b.declining, pct: b.decliningPct, color: '#ef4444' },
+        { label: '⬆️ New Highs', count: b.newHigh, pct: b.newHighPct, color: '#22c55e' },
+        { label: '⬇️ New Lows', count: b.newLow, pct: b.newLowPct, color: '#ef4444' },
+        { label: '📊 Above SMA50', count: b.aboveSMA50, pct: b.aboveSMA50Pct, color: '#3b82f6' },
+        { label: '📊 Above SMA200', count: b.aboveSMA200, pct: b.aboveSMA200Pct, color: '#8b5cf6' },
+      ];
+      document.getElementById('breadthContent').innerHTML =
+        `<div class="badge ${bullish ? 'badge-success' : 'badge-error'} badge-sm mb-2">${bullish ? '🐂 Bullish' : '🐻 Bearish'} — ${b.advancingPct}% advancing</div>` +
+        rows.map(r =>
+          `<div class="flex items-center justify-between text-xs mb-1.5">
+            <span>${r.label}</span>
+            <div class="flex items-center gap-2">
+              <div class="progress-bar w-20"><div class="progress-fill" style="width:${r.pct}%;background:${r.color}"></div></div>
+              <span class="w-14 text-right">${r.count.toLocaleString()}</span>
+              <span class="w-12 text-right" style="color:${r.color}">${r.pct}%</span>
+            </div>
+          </div>`
+        ).join('');
+    }
+
+    function renderFutures(futures) {
+      if (!futures || !futures.length) {
+        document.getElementById('futuresContent').innerHTML = '<p class="text-xs text-base-content/40">No futures data</p>';
+        return;
+      }
+      document.getElementById('futuresContent').innerHTML =
+        `<table class="table table-xs w-full"><thead><tr class="text-xs"><th>Name</th><th class="text-right">Last</th><th class="text-right">Chg</th><th class="text-right">%</th></tr></thead><tbody>` +
+        futures.map(f => {
+          const color = f.changePct >= 0 ? 'green' : 'red';
+          const arrow = f.changePct >= 0 ? '▲' : '▼';
+          return `<tr><td class="font-medium">${f.name}</td><td class="text-right">${f.last.toLocaleString(undefined, {minimumFractionDigits: 2})}</td><td class="text-right ${color}">${f.change}</td><td class="text-right ${color}">${arrow} ${Math.abs(f.changePct).toFixed(2)}%</td></tr>`;
+        }).join('') +
+        `</tbody></table>`;
+    }
+
+    function formatVolume(v) {
+      if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+      if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+      if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+      return v.toString();
+    }
+
+    function renderStocks(stocks) {
+      // Sort
+      const sorted = [...stocks].sort((a, b) => {
+        let av = a[currentSort.key], bv = b[currentSort.key];
+        if (av == null) av = -Infinity;
+        if (bv == null) bv = -Infinity;
+        return currentSort.dir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+      });
+
+      // Update sort arrows
+      document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+      const arrow = document.getElementById(`sort-${currentSort.key}`);
+      if (arrow) arrow.textContent = currentSort.dir === 'asc' ? ' ▲' : ' ▼';
+
+      document.getElementById('stocksBody').innerHTML = sorted.map((s, i) => {
+        const changeColor = s.change >= 0 ? 'green' : 'red';
+        const weekColor = (s.perfWeek || 0) >= 0 ? 'green' : 'red';
+        const fire = s.change >= 50 ? ' 🔥' : s.change >= 20 ? ' 🚀' : '';
+        return `<tr>
+          <td class="font-mono text-xs">${s.rank}</td>
+          <td><span class="ticker-badge text-primary">${s.ticker}</span></td>
+          <td class="text-xs max-w-48 truncate" title="${s.company}">${s.company}</td>
+          <td class="text-xs">${s.sector}</td>
+          <td class="text-xs text-right">${s.marketCap}</td>
+          <td class="text-xs text-right">${s.pe || '-'}</td>
+          <td class="text-right font-mono">$${s.price.toFixed(2)}</td>
+          <td class="text-right font-mono ${changeColor} font-bold">${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%${fire}</td>
+          <td class="text-right font-mono ${weekColor}">${s.perfWeekStr || '-'}</td>
+          <td class="text-right font-mono text-xs">${formatVolume(s.volume)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function sortStocks(key) {
+      if (currentSort.key === key) {
+        currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort = { key, dir: key === 'rank' ? 'asc' : 'desc' };
+      }
+      if (currentData) renderStocks(currentData.stocks);
+    }
+
+    function renderPatterns(patterns) {
+      if (!patterns || !patterns.length) {
+        document.getElementById('patternsGrid').innerHTML = '<p class="text-xs text-base-content/40">No pattern data</p>';
+        return;
+      }
+      const totalStocks = patterns.reduce((s, p) => s + p.count, 0);
+      const bullish = patterns.filter(p => p.direction === 'bullish').reduce((s, p) => s + p.count, 0);
+      const bearish = patterns.filter(p => p.direction === 'bearish').reduce((s, p) => s + p.count, 0);
+
+      document.getElementById('patternsGrid').innerHTML =
+        `<div class="col-span-full mb-2 flex gap-2 flex-wrap">
+          <div class="badge badge-sm">📊 ${totalStocks} total signals</div>
+          <div class="badge badge-success badge-sm">🐂 ${bullish} bullish</div>
+          <div class="badge badge-error badge-sm">🐻 ${bearish} bearish</div>
+        </div>` +
+        patterns.sort((a, b) => b.count - a.count).map(p => {
+          const cls = `pattern-${p.direction}`;
+          const icon = p.direction === 'bullish' ? '🟢' : p.direction === 'bearish' ? '🔴' : '🟡';
+          const tickers = (p.tickers || []).map(t =>
+            `<span class="badge badge-xs badge-ghost font-mono">${t}</span>`
+          ).join(' ');
+          return `<div class="glass-card ${cls} p-3">
+            <div class="flex justify-between items-center mb-1">
+              <span class="text-sm font-medium">${icon} ${p.name}</span>
+              <span class="badge badge-sm">${p.count}</span>
+            </div>
+            ${tickers ? `<div class="flex flex-wrap gap-1 mt-1">${tickers}</div>` : ''}
+          </div>`;
+        }).join('');
+    }
+
+    function switchTab(tab) {
+      document.getElementById('stocksPanel').classList.toggle('hidden', tab !== 'stocks');
+      document.getElementById('patternsPanel').classList.toggle('hidden', tab !== 'patterns');
+      document.getElementById('tab-stocks').classList.toggle('tab-active', tab === 'stocks');
+      document.getElementById('tab-patterns').classList.toggle('tab-active', tab === 'patterns');
+    }
+
+    // Auto-load on page open
+    loadData();
+
+    // Auto-refresh every 5 minutes
+    setInterval(loadData, 5 * 60 * 1000);
+  </script>
+</body>
+</html>
